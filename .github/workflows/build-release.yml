@@ -1,0 +1,313 @@
+name: Build and publish Todo Manager release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Strict release version (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    name: Test, package, notarize, and publish
+    runs-on: macos-26
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      PUBLIC_REPOSITORY: kargnas/linear-manager
+      EVENT_SHA: ${{ github.sha }}
+
+    steps:
+      - name: Check out public release repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve and reserve release version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION_REF="$REQUESTED_VERSION"
+          if [[ ! "$VERSION_REF" =~ ^v(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$ ]]; then
+            echo "release version must use strict vMAJOR.MINOR.PATCH with components <= 999" >&2
+            exit 1
+          fi
+
+          VERSION="${VERSION_REF#v}"
+          IFS=. read -r MAJOR MINOR PATCH <<< "$VERSION"
+          BUILD_NUMBER=$((10#$MAJOR * 1000000 + 10#$MINOR * 1000 + 10#$PATCH))
+          (( BUILD_NUMBER > 0 )) || { echo "build number must be positive" >&2; exit 1; }
+
+          git fetch --tags --force origin
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            [[ "$GITHUB_REF" == "refs/tags/$VERSION_REF" ]] || {
+              echo "push release must run from its v* tag" >&2
+              exit 1
+            }
+            PUBLIC_TAG_SHA="$(git rev-parse "refs/tags/$VERSION_REF^{commit}")"
+            [[ "$PUBLIC_TAG_SHA" == "$EVENT_SHA" ]] || {
+              echo "$VERSION_REF does not point at the event SHA" >&2
+              exit 1
+            }
+          else
+            if git ls-remote --exit-code origin "refs/tags/$VERSION_REF" >/dev/null 2>&1; then
+              echo "refusing to overwrite existing public tag: $VERSION_REF" >&2
+              exit 1
+            fi
+          fi
+
+          if gh release view "$VERSION_REF" --repo "$PUBLIC_REPOSITORY" >/dev/null 2>&1; then
+            echo "refusing to overwrite existing GitHub release: $VERSION_REF" >&2
+            exit 1
+          fi
+
+          {
+            echo "VERSION=$VERSION"
+            echo "TAG=$VERSION_REF"
+            echo "BUILD_NUMBER=$BUILD_NUMBER"
+            echo "RELEASE_DIR=$RUNNER_TEMP/todo-manager-release"
+          } >> "$GITHUB_ENV"
+
+      - name: Check out matching private source tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: kargnas/linear-manager-src
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+          ssh-key: ${{ secrets.SOURCE_REPO_DEPLOY_KEY }}
+
+      - name: Verify private source tag identity
+        working-directory: source
+        run: |
+          set -euo pipefail
+          SOURCE_REF="$TAG"
+          SOURCE_TAG_SHA="$(git rev-parse "refs/tags/$SOURCE_REF^{commit}")"
+          SOURCE_HEAD_SHA="$(git rev-parse HEAD)"
+          [[ "$SOURCE_TAG_SHA" == "$SOURCE_HEAD_SHA" ]] || {
+            echo "source HEAD is not the requested exact tag: $SOURCE_REF" >&2
+            exit 1
+          }
+          [[ "$(git describe --tags --exact-match HEAD)" == "$SOURCE_REF" ]] || {
+            echo "source tag is not exact: $SOURCE_REF" >&2
+            exit 1
+          }
+
+      - name: Run source tests
+        working-directory: source
+        run: swift test
+
+      - name: Import one Developer ID identity
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/todo-manager-release.keychain-db"
+          P12_PATH="$RUNNER_TEMP/todo-manager-developer-id.p12"
+          [[ -n "${BUILD_CERTIFICATE_BASE64:-}" && -n "${P12_PASSWORD:-}" ]] || {
+            echo "BUILD_CERTIFICATE_BASE64 and P12_PASSWORD are required" >&2
+            exit 1
+          }
+
+          umask 077
+          printf '%s' "$BUILD_CERTIFICATE_BASE64" | /usr/bin/base64 -D > "$P12_PATH"
+          [[ -s "$P12_PATH" ]] || { echo "Developer ID certificate is empty" >&2; exit 1; }
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$P12_PATH" -k "$KEYCHAIN_PATH" -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          IDENTITY_LINES="$(security find-identity -p codesigning -v "$KEYCHAIN_PATH" | awk '/^[[:space:]]*[0-9]+\)/ { print }')"
+          IDENTITY_COUNT="$(printf '%s\n' "$IDENTITY_LINES" | sed '/^$/d' | wc -l | tr -d ' ')"
+          [[ "$IDENTITY_COUNT" == "1" ]] || {
+            echo "P12 must contain exactly one codesigning identity" >&2
+            exit 1
+          }
+          SIGNING_IDENTITY="$(printf '%s\n' "$IDENTITY_LINES" | awk -F'"' '/Developer ID Application:/ { print $2; exit }')"
+          [[ -n "$SIGNING_IDENTITY" ]] || {
+            echo "P12 identity must be Developer ID Application" >&2
+            exit 1
+          }
+          echo "SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build signed release app
+        working-directory: source
+        run: |
+          set -euo pipefail
+          mkdir -p "$RELEASE_DIR"
+          ./script/package_macos_app.sh --configuration release \
+            --output "$RELEASE_DIR/Todo Manager.app" \
+            --version "$VERSION" \
+            --build-number "$BUILD_NUMBER" \
+            --signing-identity "$SIGNING_IDENTITY" \
+            --timestamp secure
+
+      - name: Notarize app and create signed DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          [[ -n "${APPLE_ID:-}" && -n "${APPLE_APP_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]] || {
+            echo "APPLE_ID, APPLE_APP_PASSWORD, and APPLE_TEAM_ID are required" >&2
+            exit 1
+          }
+          APP="$RELEASE_DIR/Todo Manager.app"
+          APP_ZIP="$RELEASE_DIR/Todo-Manager-$VERSION.zip"
+          DMG="$RELEASE_DIR/Todo-Manager-$VERSION.dmg"
+          DMG_STAGE="$RUNNER_TEMP/todo-manager-dmg-stage"
+
+          /usr/bin/ditto -c -k --keepParent "$APP" "$APP_ZIP"
+          xcrun notarytool submit "$APP_ZIP" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --timeout 30m \
+            --wait
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+          spctl --assess --type execute --verbose=4 "$APP"
+
+          rm -rf "$DMG_STAGE"
+          mkdir -p "$DMG_STAGE"
+          /usr/bin/ditto "$APP" "$DMG_STAGE/Todo Manager.app"
+          ln -s /Applications "$DMG_STAGE/Applications"
+          hdiutil create -volname "Todo Manager $VERSION" -srcfolder "$DMG_STAGE" \
+            -ov -format UDZO "$DMG"
+          codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$DMG"
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --timeout 30m \
+            --wait
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
+
+      - name: Sign DMG and generate appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "${SPARKLE_PRIVATE_KEY:-}" ]] || { echo "SPARKLE_PRIVATE_KEY is required" >&2; exit 1; }
+          SPARKLE_VERSION="2.9.4"
+          SPARKLE_ARCHIVE="$RUNNER_TEMP/Sparkle-$SPARKLE_VERSION.tar.xz"
+          SPARKLE_KEY_PATH="$RUNNER_TEMP/sparkle-private-key"
+          SPARKLE_ROOT="$RUNNER_TEMP/sparkle-distribution"
+          DMG="$RELEASE_DIR/Todo-Manager-$VERSION.dmg"
+          APPCAST="$RELEASE_DIR/appcast.xml"
+
+          umask 077
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$SPARKLE_KEY_PATH"
+          [[ -s "$SPARKLE_KEY_PATH" ]] || { echo "Sparkle private key is empty" >&2; exit 1; }
+          rm -rf "$SPARKLE_ROOT"
+          mkdir -p "$SPARKLE_ROOT"
+          curl -fsSL --retry 3 \
+            "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz" \
+            -o "$SPARKLE_ARCHIVE"
+          tar -xJf "$SPARKLE_ARCHIVE" -C "$SPARKLE_ROOT"
+          SIGN_UPDATE="$SPARKLE_ROOT/bin/sign_update"
+          [[ -x "$SIGN_UPDATE" ]] || { echo "official Sparkle sign_update was not found" >&2; exit 1; }
+
+          SIGNATURE_OUTPUT="$("$SIGN_UPDATE" "$DMG" --ed-key-file "$SPARKLE_KEY_PATH")"
+          ED_SIGNATURE="$(printf '%s\n' "$SIGNATURE_OUTPUT" | sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p' | head -n 1)"
+          [[ -n "$ED_SIGNATURE" ]] || { echo "Sparkle EdDSA signature was not generated" >&2; exit 1; }
+          DMG_LENGTH="$(stat -f '%z' "$DMG")"
+          PUB_DATE="$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')"
+          cat > "$APPCAST" <<APPCAST_XML
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>Todo Manager Updates</title>
+              <link>https://github.com/kargnas/linear-manager/releases/latest/download/appcast.xml</link>
+              <description>Todo Manager automatic updates</description>
+              <language>en</language>
+              <item>
+                <title>Todo Manager $VERSION</title>
+                <pubDate>$PUB_DATE</pubDate>
+                <sparkle:releaseNotesLink>https://github.com/kargnas/linear-manager/releases/tag/$TAG</sparkle:releaseNotesLink>
+                <enclosure
+                  url="https://github.com/kargnas/linear-manager/releases/download/$TAG/Todo-Manager-$VERSION.dmg"
+                  sparkle:version="$BUILD_NUMBER"
+                  sparkle:shortVersionString="$VERSION"
+                  sparkle:edSignature="$ED_SIGNATURE"
+                  length="$DMG_LENGTH"
+                  type="application/octet-stream" />
+              </item>
+            </channel>
+          </rss>
+          APPCAST_XML
+          xmllint --noout "$APPCAST"
+          [[ "$(stat -f '%z' "$DMG")" == "$DMG_LENGTH" ]] || {
+            echo "appcast DMG length is stale" >&2
+            exit 1
+          }
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DMG="$RELEASE_DIR/Todo-Manager-$VERSION.dmg"
+          APPCAST="$RELEASE_DIR/appcast.xml"
+          if gh release view "$TAG" --repo "$PUBLIC_REPOSITORY" >/dev/null 2>&1; then
+            echo "refusing to overwrite existing GitHub release: $TAG" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            gh release create "$TAG" "$DMG" "$APPCAST" \
+              --repo "$PUBLIC_REPOSITORY" \
+              --verify-tag \
+              --title "Todo Manager $VERSION" \
+              --notes "Todo Manager $VERSION"
+          else
+            gh release create "$TAG" "$DMG" "$APPCAST" \
+              --repo "$PUBLIC_REPOSITORY" \
+              --target "$EVENT_SHA" \
+              --title "Todo Manager $VERSION" \
+              --notes "Todo Manager $VERSION"
+          fi
+
+      - name: Remove temporary signing material
+        if: ${{ always() }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/todo-manager-release.keychain-db"
+          security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1 || true
+          security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
+          rm -f \
+            "$RUNNER_TEMP/todo-manager-developer-id.p12" \
+            "$RUNNER_TEMP/sparkle-private-key" \
+            "$RUNNER_TEMP/Sparkle-2.9.4.tar.xz"
+          rm -rf \
+            "$RUNNER_TEMP/sparkle-distribution" \
+            "$RUNNER_TEMP/todo-manager-dmg-stage" \
+            "$RELEASE_DIR"
