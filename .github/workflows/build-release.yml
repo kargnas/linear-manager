@@ -1,4 +1,4 @@
-name: Build and publish Todo Manager release
+name: Build and publish Linear Manager release
 
 on:
   push:
@@ -85,7 +85,7 @@ jobs:
             echo "VERSION=$VERSION"
             echo "TAG=$VERSION_REF"
             echo "BUILD_NUMBER=$BUILD_NUMBER"
-            echo "RELEASE_DIR=$RUNNER_TEMP/todo-manager-release"
+            echo "RELEASE_DIR=$RUNNER_TEMP/linear-manager-release"
           } >> "$GITHUB_ENV"
 
       - name: Check out matching private source tag
@@ -124,8 +124,8 @@ jobs:
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
         run: |
           set -euo pipefail
-          KEYCHAIN_PATH="$RUNNER_TEMP/todo-manager-release.keychain-db"
-          P12_PATH="$RUNNER_TEMP/todo-manager-developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/linear-manager-release.keychain-db"
+          P12_PATH="$RUNNER_TEMP/linear-manager-developer-id.p12"
           [[ -n "${BUILD_CERTIFICATE_BASE64:-}" && -n "${P12_PASSWORD:-}" ]] || {
             echo "BUILD_CERTIFICATE_BASE64 and P12_PASSWORD are required" >&2
             exit 1
@@ -163,7 +163,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RELEASE_DIR"
           ./script/package_macos_app.sh --configuration release \
-            --output "$RELEASE_DIR/Todo Manager.app" \
+            --output "$RELEASE_DIR/Linear Manager.app" \
             --version "$VERSION" \
             --build-number "$BUILD_NUMBER" \
             --signing-identity "$SIGNING_IDENTITY" \
@@ -180,10 +180,10 @@ jobs:
             echo "APPLE_ID, APPLE_APP_PASSWORD, and APPLE_TEAM_ID are required" >&2
             exit 1
           }
-          APP="$RELEASE_DIR/Todo Manager.app"
-          APP_ZIP="$RELEASE_DIR/Todo-Manager-$VERSION.zip"
-          DMG="$RELEASE_DIR/Todo-Manager-$VERSION.dmg"
-          DMG_STAGE="$RUNNER_TEMP/todo-manager-dmg-stage"
+          APP="$RELEASE_DIR/Linear Manager.app"
+          APP_ZIP="$RELEASE_DIR/Linear-Manager-$VERSION.zip"
+          DMG="$RELEASE_DIR/Linear-Manager-$VERSION.dmg"
+          DMG_STAGE="$RUNNER_TEMP/linear-manager-dmg-stage"
 
           /usr/bin/ditto -c -k --keepParent "$APP" "$APP_ZIP"
           xcrun notarytool submit "$APP_ZIP" \
@@ -198,9 +198,9 @@ jobs:
 
           rm -rf "$DMG_STAGE"
           mkdir -p "$DMG_STAGE"
-          /usr/bin/ditto "$APP" "$DMG_STAGE/Todo Manager.app"
+          /usr/bin/ditto "$APP" "$DMG_STAGE/Linear Manager.app"
           ln -s /Applications "$DMG_STAGE/Applications"
-          hdiutil create -volname "Todo Manager $VERSION" -srcfolder "$DMG_STAGE" \
+          hdiutil create -volname "Linear Manager $VERSION" -srcfolder "$DMG_STAGE" \
             -ov -format UDZO "$DMG"
           codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$DMG"
           xcrun notarytool submit "$DMG" \
@@ -223,7 +223,7 @@ jobs:
           SPARKLE_ARCHIVE="$RUNNER_TEMP/Sparkle-$SPARKLE_VERSION.tar.xz"
           SPARKLE_KEY_PATH="$RUNNER_TEMP/sparkle-private-key"
           SPARKLE_ROOT="$RUNNER_TEMP/sparkle-distribution"
-          DMG="$RELEASE_DIR/Todo-Manager-$VERSION.dmg"
+          DMG="$RELEASE_DIR/Linear-Manager-$VERSION.dmg"
           APPCAST="$RELEASE_DIR/appcast.xml"
 
           umask 077
@@ -247,16 +247,16 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
             <channel>
-              <title>Todo Manager Updates</title>
+              <title>Linear Manager Updates</title>
               <link>https://github.com/kargnas/linear-manager/releases/latest/download/appcast.xml</link>
-              <description>Todo Manager automatic updates</description>
+              <description>Linear Manager automatic updates</description>
               <language>en</language>
               <item>
-                <title>Todo Manager $VERSION</title>
+                <title>Linear Manager $VERSION</title>
                 <pubDate>$PUB_DATE</pubDate>
                 <sparkle:releaseNotesLink>https://github.com/kargnas/linear-manager/releases/tag/$TAG</sparkle:releaseNotesLink>
                 <enclosure
-                  url="https://github.com/kargnas/linear-manager/releases/download/$TAG/Todo-Manager-$VERSION.dmg"
+                  url="https://github.com/kargnas/linear-manager/releases/download/$TAG/Linear-Manager-$VERSION.dmg"
                   sparkle:version="$BUILD_NUMBER"
                   sparkle:shortVersionString="$VERSION"
                   sparkle:edSignature="$ED_SIGNATURE"
@@ -277,7 +277,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          DMG="$RELEASE_DIR/Todo-Manager-$VERSION.dmg"
+          DMG="$RELEASE_DIR/Linear-Manager-$VERSION.dmg"
           APPCAST="$RELEASE_DIR/appcast.xml"
           if gh release view "$TAG" --repo "$PUBLIC_REPOSITORY" >/dev/null 2>&1; then
             echo "refusing to overwrite existing GitHub release: $TAG" >&2
@@ -287,27 +287,27 @@ jobs:
             gh release create "$TAG" "$DMG" "$APPCAST" \
               --repo "$PUBLIC_REPOSITORY" \
               --verify-tag \
-              --title "Todo Manager $VERSION" \
-              --notes "Todo Manager $VERSION"
+              --title "Linear Manager $VERSION" \
+              --notes "Linear Manager $VERSION"
           else
             gh release create "$TAG" "$DMG" "$APPCAST" \
               --repo "$PUBLIC_REPOSITORY" \
               --target "$EVENT_SHA" \
-              --title "Todo Manager $VERSION" \
-              --notes "Todo Manager $VERSION"
+              --title "Linear Manager $VERSION" \
+              --notes "Linear Manager $VERSION"
           fi
 
       - name: Remove temporary signing material
         if: ${{ always() }}
         run: |
-          KEYCHAIN_PATH="$RUNNER_TEMP/todo-manager-release.keychain-db"
+          KEYCHAIN_PATH="$RUNNER_TEMP/linear-manager-release.keychain-db"
           security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1 || true
           security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
           rm -f \
-            "$RUNNER_TEMP/todo-manager-developer-id.p12" \
+            "$RUNNER_TEMP/linear-manager-developer-id.p12" \
             "$RUNNER_TEMP/sparkle-private-key" \
             "$RUNNER_TEMP/Sparkle-2.9.4.tar.xz"
           rm -rf \
             "$RUNNER_TEMP/sparkle-distribution" \
-            "$RUNNER_TEMP/todo-manager-dmg-stage" \
+            "$RUNNER_TEMP/linear-manager-dmg-stage" \
             "$RELEASE_DIR"

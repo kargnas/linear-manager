@@ -1,6 +1,6 @@
 # linear-manager
 
-`linear-manager` is the public release-only repository for Todo Manager. Product source code stays in the private `kargnas/linear-manager-src` repository; this repository contains only GitHub Actions configuration and published update assets.
+`linear-manager` is the public release-only repository for Linear Manager. Product source code stays in the private `kargnas/linear-manager-src` repository; this repository contains only GitHub Actions configuration and published update assets.
 
 ## Release flow
 
@@ -17,7 +17,7 @@ The workflow is the source of truth for runner, tool, secret, and signing detail
 
 Every release contains exactly these two assets:
 
-- `Todo-Manager-VERSION.dmg`
+- `Linear-Manager-VERSION.dmg`
 - `appcast.xml`
 
 The appcast is public and points to the release DMG with its exact byte length, Sparkle EdDSA signature, build number, and short version. No source archive or private build material is published.
@@ -25,7 +25,7 @@ The appcast is public and points to the release DMG with its exact byte length, 
 Latest downloads:
 
 ```text
-https://github.com/kargnas/linear-manager/releases/latest/download/Todo-Manager-VERSION.dmg
+https://github.com/kargnas/linear-manager/releases/latest/download/Linear-Manager-VERSION.dmg
 https://github.com/kargnas/linear-manager/releases/latest/download/appcast.xml
 ```
 
@@ -43,9 +43,9 @@ After a published release, verify the public appcast and notarized DMG on macOS:
 
 ```bash
 curl -fsSL https://github.com/kargnas/linear-manager/releases/latest/download/appcast.xml
-curl -fsSLO https://github.com/kargnas/linear-manager/releases/latest/download/Todo-Manager-VERSION.dmg
-spctl --assess --type open --context context:primary-signature --verbose=4 Todo-Manager-VERSION.dmg
-xcrun stapler validate Todo-Manager-VERSION.dmg
+curl -fsSLO https://github.com/kargnas/linear-manager/releases/latest/download/Linear-Manager-VERSION.dmg
+spctl --assess --type open --context context:primary-signature --verbose=4 Linear-Manager-VERSION.dmg
+xcrun stapler validate Linear-Manager-VERSION.dmg
 ```
 
 ## Security boundary
