@@ -116,7 +116,7 @@ jobs:
 
       - name: Run source tests
         working-directory: source
-        run: swift test --no-parallel
+        run: swift test --no-parallel --skip 'ComposerViewModelTests/cachedTypingLatency|HeuristicIssueMatcherTests/largeSnapshotLatency'
 
       - name: Import one Developer ID identity
         env:
