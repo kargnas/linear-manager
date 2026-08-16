@@ -116,7 +116,7 @@ jobs:
 
       - name: Run source tests
         working-directory: source
-        run: swift test
+        run: swift test --no-parallel
 
       - name: Import one Developer ID identity
         env:
