@@ -7,7 +7,8 @@
 Releases run from `.github/workflows/build-release.yml` on either:
 
 - a pushed `vMAJOR.MINOR.PATCH` tag; or
-- a manual workflow dispatch whose required `version` input is the same strict tag form.
+- a manual workflow dispatch whose required `version` input is the same strict tag form; or
+- automatically, when a push to the private source repository's `main` branch bumps the patch version and dispatches this workflow (a commit subject containing `[skip release]` opts out).
 
 Each component must be at most 999. The workflow derives the positive build number `MAJOR*1000000 + MINOR*1000 + PATCH`, checks out the matching private source tag, runs the Swift tests, and creates the signed and notarized app and DMG. Existing public tags and GitHub Releases are refused instead of overwritten.
 
