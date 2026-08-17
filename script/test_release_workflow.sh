@@ -64,6 +64,10 @@ require "stat -f '%z'|stat -f \"%z\"" "appcast length must match DMG bytes"
 require "gh release view" "existing releases must be refused"
 require "github\.token" "public release must use github.token"
 require "gh release (create|upload)" "GitHub Release publication is required"
+require "ensure_release" "release creation must recover from transient GitHub failures"
+require "upload_release_assets" "release asset upload must recover from transient GitHub failures"
+require "HTTP 5" "GitHub retries must be limited to server failures"
+require "--clobber" "release asset retries must be idempotent"
 require "if:[[:space:]]*.*always\\(\\)" "credential cleanup must always run"
 
 if grep -A8 -E "^[[:space:]]+push:" "$WORKFLOW" | grep -Eq "branches:|main"; then

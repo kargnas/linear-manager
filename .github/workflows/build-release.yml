@@ -279,23 +279,55 @@ jobs:
           set -euo pipefail
           DMG="$RELEASE_DIR/Linear-Manager-$VERSION.dmg"
           APPCAST="$RELEASE_DIR/appcast.xml"
+
+          ensure_release() {
+            local attempt output status
+            for attempt in 1 2 3; do
+              set +e
+              if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+                output="$(gh release create "$TAG" \
+                  --repo "$PUBLIC_REPOSITORY" \
+                  --verify-tag \
+                  --title "Linear Manager $VERSION" \
+                  --notes "Linear Manager $VERSION" 2>&1)"
+              else
+                output="$(gh release create "$TAG" \
+                  --repo "$PUBLIC_REPOSITORY" \
+                  --target "$EVENT_SHA" \
+                  --title "Linear Manager $VERSION" \
+                  --notes "Linear Manager $VERSION" 2>&1)"
+              fi
+              status=$?
+              set -e
+              printf '%s\n' "$output"
+              [[ "$status" == 0 ]] && return 0
+              gh release view "$TAG" --repo "$PUBLIC_REPOSITORY" >/dev/null 2>&1 && return 0
+              [[ "$output" == *"HTTP 5"* && "$attempt" -lt 3 ]] || return "$status"
+              sleep "$attempt"
+            done
+          }
+
+          upload_release_assets() {
+            local attempt output status
+            for attempt in 1 2 3; do
+              set +e
+              output="$(gh release upload "$TAG" "$DMG" "$APPCAST" \
+                --repo "$PUBLIC_REPOSITORY" --clobber 2>&1)"
+              status=$?
+              set -e
+              printf '%s\n' "$output"
+              [[ "$status" == 0 ]] && return 0
+              [[ "$output" == *"HTTP 5"* && "$attempt" -lt 3 ]] || return "$status"
+              sleep "$attempt"
+            done
+          }
+
           if gh release view "$TAG" --repo "$PUBLIC_REPOSITORY" >/dev/null 2>&1; then
             echo "refusing to overwrite existing GitHub release: $TAG" >&2
             exit 1
           fi
-          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            gh release create "$TAG" "$DMG" "$APPCAST" \
-              --repo "$PUBLIC_REPOSITORY" \
-              --verify-tag \
-              --title "Linear Manager $VERSION" \
-              --notes "Linear Manager $VERSION"
-          else
-            gh release create "$TAG" "$DMG" "$APPCAST" \
-              --repo "$PUBLIC_REPOSITORY" \
-              --target "$EVENT_SHA" \
-              --title "Linear Manager $VERSION" \
-              --notes "Linear Manager $VERSION"
-          fi
+          ensure_release
+          upload_release_assets
 
       - name: Remove temporary signing material
         if: ${{ always() }}
